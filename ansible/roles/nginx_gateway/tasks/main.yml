@@ -198,11 +198,14 @@
       iptables  -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
       ip6tables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 
-      # Allow port 443 only from Cloudflare IPs
+      # Allow outbound traffic FROM containers (e.g. SearXNG fetching search results)
+      iptables  -A DOCKER-USER -s 172.16.0.0/12 -j RETURN
+
+      # Allow inbound port 443 only from Cloudflare IPs
       iptables  -A DOCKER-USER -p tcp --dport 443 -m set --match-set cloudflare_v4 src -j RETURN
       ip6tables -A DOCKER-USER -p tcp --dport 443 -m set --match-set cloudflare_v6 src -j RETURN
 
-      # Drop all other traffic to port 443
+      # Drop all other inbound traffic to port 443
       iptables  -A DOCKER-USER -p tcp --dport 443 -j DROP
       ip6tables -A DOCKER-USER -p tcp --dport 443 -j DROP
 
