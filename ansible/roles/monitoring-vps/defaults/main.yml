@@ -1,0 +1,8 @@
+# node exporter version
+node_exporter_version: "1.9.1"
+
+# fail2ban exporter version
+fail2ban_exporter_version: "0.10.3"
+
+# promtail version
+promtail_version: "3.6.3"

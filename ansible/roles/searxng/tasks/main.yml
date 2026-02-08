@@ -1,0 +1,153 @@
+---
+- name: Install required packages for Docker repository
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - python3-requests
+    state: present
+    update_cache: true
+  become: true
+
+- name: Create directory for Docker GPG key
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Add Docker GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/debian/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: '0644'
+  become: true
+
+- name: Set Docker GPG key permissions
+  ansible.builtin.file:
+    path: /etc/apt/keyrings/docker.asc
+    mode: '0644'
+    owner: root
+    group: root
+  become: true
+
+- name: Get system architecture
+  ansible.builtin.command: dpkg --print-architecture
+  register: searxng_system_arch
+  changed_when: false
+
+- name: Add Docker repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ searxng_system_arch.stdout }}
+      signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/debian
+      {{ ansible_facts['distribution_release'] }} stable
+    state: present
+    filename: docker
+  become: true
+
+- name: Install Docker and Docker Compose plugin
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+  become: true
+
+- name: Ensure Docker service is running
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+  become: true
+
+- name: Create SearXNG directories
+  ansible.builtin.file:
+    path: "{{ directory_item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - /etc/searxng
+    - /etc/searxng/custom
+    - /etc/searxng/custom/simple
+    - /etc/searxng/custom/simple/img
+  loop_control:
+    loop_var: directory_item
+  become: true
+
+- name: Get latest SearXNG Docker image tag from Docker Hub
+  ansible.builtin.uri:
+    url: https://hub.docker.com/v2/repositories/searxng/searxng/tags
+    return_content: true
+  register: searxng_dockerhub_response
+  check_mode: false
+  changed_when: false
+
+- name: Set latest tag variable
+  ansible.builtin.set_fact:
+    searxng_latest_tag: "{{ searxng_dockerhub_response.json.results[0].name }}"
+  when: searxng_dockerhub_response.status == 200
+
+- name: Check if SearXNG container exists
+  community.docker.docker_container_info:
+    name: searxng
+  register: searxng_container
+  become: true
+
+- name: Create credentials directory if it doesn't exist
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/credentials/hosts/{{ inventory_hostname }}"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+
+- name: Generate SearXNG secret key
+  ansible.builtin.set_fact:
+    searxng_secret_key: "{{ lookup('ansible.builtin.password',
+                            playbook_dir + '/credentials/hosts/' + inventory_hostname + '/searxng_secret_key.txt' +
+                            ' chars=ascii_letters,digits length=64') }}"
+
+- name: Configure SearXNG settings
+  ansible.builtin.template:
+    src: settings.yml.j2
+    dest: /etc/searxng/settings.yml
+    mode: '0644'
+  become: true
+  register: searxng_settings_result
+
+- name: Copy docker-compose.yml for SearXNG
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /etc/searxng/docker-compose.yml
+    mode: '0644'
+  become: true
+  register: searxng_compose_result
+
+- name: Copy SearXNG logo
+  ansible.builtin.copy:
+    src: searxng.png
+    dest: /etc/searxng/custom/simple/img/searxng.png
+    mode: '0644'
+  become: true
+  register: searxng_logo_result
+
+- name: Start SearXNG container
+  community.docker.docker_compose_v2:
+    project_src: /etc/searxng
+    state: present
+    pull: "always"
+  become: true
+  when: >-
+    searxng_settings_result.changed or
+    searxng_compose_result.changed or
+    searxng_logo_result.changed or
+    not searxng_container.exists
+
+# Firewall: no host ports exposed — traffic comes via vps-services Docker network

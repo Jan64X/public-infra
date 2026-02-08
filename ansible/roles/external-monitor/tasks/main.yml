@@ -1,0 +1,176 @@
+---
+- name: Install required packages for Docker repository
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - python3-requests
+    state: present
+    update_cache: true
+  become: true
+
+- name: Create directory for Docker GPG key
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Add Docker GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/debian/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: '0644'
+  become: true
+
+- name: Set Docker GPG key permissions
+  ansible.builtin.file:
+    path: /etc/apt/keyrings/docker.asc
+    mode: '0644'
+    owner: root
+    group: root
+  become: true
+
+- name: Get system architecture
+  ansible.builtin.command: dpkg --print-architecture
+  register: system_arch
+  changed_when: false
+
+- name: Add Docker repository
+  ansible.builtin.apt_repository:
+    repo: "deb [arch={{ system_arch.stdout }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian {{ ansible_facts['distribution_release'] }} stable"
+    state: present
+    filename: docker
+  become: true
+
+- name: Install Docker and Docker Compose plugin
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+  become: true
+
+- name: Ensure Docker service is running
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+  become: true
+
+- name: Create external-monitor directories
+  ansible.builtin.file:
+    path: "{{ directory_item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - /etc/external-monitor
+    - /etc/external-monitor/prometheus
+    - /etc/external-monitor/loki
+    - /etc/external-monitor/grafana
+    - /etc/external-monitor/grafana/provisioning
+    - /etc/external-monitor/grafana/provisioning/datasources
+    - /etc/external-monitor/grafana/provisioning/dashboards
+    - /var/lib/external-prometheus
+    - /var/lib/external-grafana
+    - /var/lib/external-loki
+  loop_control:
+    loop_var: directory_item
+  become: true
+
+- name: Set ownership for Prometheus directory
+  ansible.builtin.file:
+    path: /var/lib/external-prometheus
+    owner: 65534
+    group: 65534
+    recurse: true
+  become: true
+
+- name: Set ownership for Grafana directory
+  ansible.builtin.file:
+    path: /var/lib/external-grafana
+    owner: 472
+    group: 472
+    recurse: true
+  become: true
+
+- name: Set ownership for Loki directory
+  ansible.builtin.file:
+    path: /var/lib/external-loki
+    owner: 10001
+    group: 10001
+    recurse: true
+  become: true
+
+- name: Configure Prometheus for external monitoring
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: /etc/external-monitor/prometheus/prometheus.yml
+    mode: '0644'
+  become: true
+  register: prometheus_config
+  notify: Restart external monitor stack
+
+- name: Configure Loki
+  ansible.builtin.template:
+    src: loki-config.yml.j2
+    dest: /etc/external-monitor/loki/loki-config.yml
+    mode: '0644'
+  become: true
+  notify: Restart external monitor stack
+
+- name: Configure Grafana datasources
+  ansible.builtin.template:
+    src: grafana-datasources.yml.j2
+    dest: /etc/external-monitor/grafana/provisioning/datasources/datasources.yml
+    mode: '0644'
+  become: true
+  notify: Restart external monitor stack
+
+- name: Configure Grafana dashboard provisioning
+  ansible.builtin.template:
+    src: grafana-dashboard-provider.yml.j2
+    dest: /etc/external-monitor/grafana/provisioning/dashboards/default.yml
+    mode: '0644'
+  become: true
+  notify: Restart external monitor stack
+
+- name: Copy docker-compose.yml for external monitor stack
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /etc/external-monitor/docker-compose.yml
+    mode: '0644'
+  become: true
+  register: compose_result
+
+- name: Start external monitor stack
+  community.docker.docker_compose_v2:
+    project_src: /etc/external-monitor
+    state: present
+    pull: "always"
+  become: true
+  when: >
+    prometheus_config.changed or
+    compose_result.changed
+
+- name: Allow Prometheus HTTP (localhost only)
+  community.general.ufw:
+    rule: allow
+    port: 9090
+    proto: tcp
+    from_ip: 127.0.0.1
+  notify: Reload ufw
+
+- name: Remove stale Alertmanager UFW rule
+  community.general.ufw:
+    rule: allow
+    port: 9093
+    proto: tcp
+    from_ip: 127.0.0.1
+    delete: true
+  notify: Reload ufw

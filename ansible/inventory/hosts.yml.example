@@ -1,0 +1,17 @@
+all:
+  hosts:
+    oraclevps:
+      ansible_host: x.x.x.x  # Your VPS public IP
+      ansible_user: ansible
+      ansible_python_interpreter: /usr/bin/python3
+      ansible_become_method: sudo
+      system_shell: /bin/bash
+      os_family: Debian
+      host_roles:
+        - base
+        - monitoring-vps
+        - nginx_gateway
+        - searxng
+        - filescdn
+        - external-monitor
+      hostname: oraclevps

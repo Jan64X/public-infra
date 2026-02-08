@@ -1,0 +1,19 @@
+services:
+  filescdn:
+    container_name: filescdn
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    networks:
+      - vps-services
+    volumes:
+      - /opt/filescdn/nginx-filescdn.conf:/etc/nginx/conf.d/default.conf:ro
+      - /srv/filescdn:/srv/filescdn:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  vps-services:
+    external: true

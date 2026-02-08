@@ -1,0 +1,10 @@
+---
+- name: Restart external monitor stack
+  community.docker.docker_compose_v2:
+    project_src: /etc/external-monitor
+    state: restarted
+  become: true
+
+- name: Reload ufw
+  community.general.ufw:
+    state: reloaded

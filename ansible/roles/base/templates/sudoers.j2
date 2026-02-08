@@ -1,0 +1,25 @@
+# Sudo Hardening (ANSSI-BP-028)
+Defaults    env_reset
+Defaults    mail_badpass
+Defaults    secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Defaults    use_pty
+Defaults    logfile=/var/log/sudo.log
+Defaults    log_input,log_output
+Defaults    iolog_dir=/var/log/sudo-io/%{user}
+Defaults    passwd_timeout=1
+Defaults    timestamp_timeout=5
+Defaults    requiretty
+
+# Restrict environment variables
+Defaults    env_keep -= "DISPLAY HOME MAIL SHELL"
+
+# Allow root to run commands without password
+root ALL=(ALL:ALL) NOPASSWD:ALL
+
+# Allow ansible user to run commands without password
+{{ ansible_user }} ALL=(ALL:ALL) NOPASSWD:ALL
+
+# Allow wheel group sudo access (with password)
+%wheel ALL=(ALL:ALL) ALL
+
+@includedir /etc/sudoers.d

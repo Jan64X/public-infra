@@ -1,0 +1,25 @@
+---
+- name: Configure all servers
+  hosts: all
+  become: true
+  become_method: "{{ ansible_become_method }}"
+
+  pre_tasks:
+    - name: Verify required variables
+      ansible.builtin.assert:
+        that:
+          - os_family is defined
+          - system_shell is defined
+          - sysadmin_ssh_key is defined
+        fail_msg: "Missing required host variables"
+
+# if you want to apply the base role to all host uncoditionally, uncomment the following lines
+#  roles:
+#    - role: base  # Always applied to all hosts
+
+  tasks:
+    - name: Include role if defined for host
+      ansible.builtin.include_role:
+        name: "{{ item }}"
+      loop: "{{ host_roles | default([]) }}"
+      when: host_roles is defined

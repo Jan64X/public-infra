@@ -1,0 +1,528 @@
+---
+- name: Install required packages
+  ansible.builtin.apt:
+    name:
+      - sudo
+      - openssh-server
+      - ufw
+      - unattended-upgrades
+      - apt-listchanges
+      - fail2ban
+      - chrony
+      - logrotate
+      - rsyslog
+      - curl
+      - wget
+      - htop
+      - vim
+      - git
+    state: present
+    update_cache: true
+
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ hostname }}"
+
+- name: Update /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1'
+    line: "127.0.1.1 {{ hostname }}"
+    state: present
+
+- name: Create required groups
+  ansible.builtin.group:
+    name: "{{ group_name }}"
+    state: present
+  loop:
+    - wheel
+    - ssh
+  loop_control:
+    loop_var: group_name
+
+- name: Create system user
+  ansible.builtin.user:
+    name: "{{ system_user }}"
+    shell: "{{ system_shell }}"
+    groups: "{{ system_user_groups }}"
+    append: true
+    create_home: true
+    state: present
+
+- name: Create ansible user
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    shell: "{{ system_shell }}"
+    groups: "{{ ansible_user_groups }}"
+    append: true
+    create_home: true
+    state: present
+
+- name: Set up sudo configuration
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: /etc/sudoers
+    mode: '0440'
+    owner: root
+    group: root
+    validate: 'visudo -cf %s'
+  when: ansible_become_method == "sudo"
+
+- name: Create SSH directory for system user
+  ansible.builtin.file:
+    path: "/home/{{ system_user }}/.ssh"
+    state: directory
+    mode: '0700'
+    owner: "{{ system_user }}"
+    group: "{{ system_user }}"
+
+- name: Create SSH directory for ansible user
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.ssh"
+    state: directory
+    mode: '0700'
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Add SSH public key for system user
+  ansible.builtin.copy:
+    content: "{{ sysadmin_ssh_key }}"
+    dest: "/home/{{ system_user }}/.ssh/authorized_keys"
+    mode: '0600'
+    owner: "{{ system_user }}"
+    group: "{{ system_user }}"
+
+- name: Add SSH public key for ansible user
+  ansible.builtin.copy:
+    content: "{{ ansible_ssh_public_key }}"
+    dest: "/home/{{ ansible_user }}/.ssh/authorized_keys"
+    mode: '0600'
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Configure SSH daemon
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    mode: '0600'
+    owner: root
+    group: root
+  notify: Restart sshd
+
+- name: Ensure SSH daemon is running and enabled
+  ansible.builtin.service:
+    name: sshd
+    state: started
+    enabled: true
+
+# Security Enhancements
+
+- name: Configure unattended upgrades
+  ansible.builtin.template:
+    src: 50unattended-upgrades.j2
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    mode: '0644'
+    owner: root
+    group: root
+
+- name: Enable automatic upgrades
+  ansible.builtin.template:
+    src: 20auto-upgrades.j2
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    mode: '0644'
+    owner: root
+    group: root
+
+- name: Configure fail2ban
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    mode: '0644'
+    owner: root
+    group: root
+  notify: Restart fail2ban
+
+- name: Ensure fail2ban is running and enabled
+  ansible.builtin.service:
+    name: fail2ban
+    state: started
+    enabled: true
+
+- name: Configure chrony (NTP)
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    mode: '0644'
+    owner: root
+    group: root
+  notify: Restart chrony
+  when: chrony_custom_config | default(false)
+
+- name: Ensure chrony is running and enabled
+  ansible.builtin.service:
+    name: chrony
+    state: started
+    enabled: true
+
+- name: Set kernel parameters for security
+  ansible.posix.sysctl:
+    name: "{{ sysctl_param.name }}"
+    value: "{{ sysctl_param.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-security.conf
+  loop:
+    # Network security
+#    - { name: 'net.ipv4.ip_forward', value: '0' } # why is this "changed" on every run? in roles with docker
+    - { name: 'net.ipv4.conf.all.send_redirects', value: '0' }
+    - { name: 'net.ipv4.conf.default.send_redirects', value: '0' }
+    - { name: 'net.ipv4.conf.all.accept_source_route', value: '0' }
+    - { name: 'net.ipv4.conf.default.accept_source_route', value: '0' }
+    - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+    - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+    - { name: 'net.ipv4.conf.all.secure_redirects', value: '0' }
+    - { name: 'net.ipv4.conf.default.secure_redirects', value: '0' }
+#    - { name: 'net.ipv4.conf.all.log_martians', value: '1' } # has specific behavior in kernel and not idempotent in Ansible - disabled for now, same as below
+#    - { name: 'net.ipv4.conf.default.log_martians', value: '1' }
+    - { name: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+    - { name: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+    - { name: 'net.ipv4.tcp_syncookies', value: '1' }
+    # Memory protection
+    - { name: 'kernel.dmesg_restrict', value: '1' }
+    - { name: 'kernel.kptr_restrict', value: '2' }
+    - { name: 'kernel.yama.ptrace_scope', value: '1' }
+  loop_control:
+    loop_var: sysctl_param
+
+- name: Disable uncommon network protocols
+  ansible.posix.sysctl:
+    name: "{{ network_protocol_param }}"
+    value: '1'
+    sysctl_set: true
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-network-hardening.conf
+  loop:
+    - net.ipv4.conf.all.drop_gratuitous_arp
+    - net.ipv4.conf.default.drop_gratuitous_arp
+    - net.ipv4.conf.all.drop_unicast_in_l2_multicast
+    - net.ipv4.conf.default.drop_unicast_in_l2_multicast
+  loop_control:
+    loop_var: network_protocol_param
+
+- name: Enable TCP hardening
+  ansible.posix.sysctl:
+    name: "{{ tcp_param.name }}"
+    value: "{{ tcp_param.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-network-hardening.conf
+  loop:
+    - { name: 'net.ipv4.tcp_rfc1337', value: '1' }
+    - { name: 'net.ipv4.tcp_syn_retries', value: '5' }
+    - { name: 'net.ipv4.tcp_synack_retries', value: '2' }
+    - { name: 'net.ipv4.tcp_max_syn_backlog', value: '2048' }
+  loop_control:
+    loop_var: tcp_param
+
+- name: Apply ANSSI-BP-028 kernel hardening parameters
+  ansible.posix.sysctl:
+    name: "{{ anssi_param.name }}"
+    value: "{{ anssi_param.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-anssi-hardening.conf
+  loop:
+    # Kernel hardening
+    - { name: 'kernel.kexec_load_disabled', value: '1' }
+    - { name: 'kernel.unprivileged_bpf_disabled', value: '1' }
+    - { name: 'kernel.unprivileged_userns_clone', value: '0' }
+    - { name: 'net.core.bpf_jit_harden', value: '2' }
+    # Restrict kernel logs
+    - { name: 'kernel.printk', value: '3 3 3 3' }
+    # Restrict perf events
+    - { name: 'kernel.perf_event_paranoid', value: '3' }
+    - { name: 'kernel.perf_cpu_time_max_percent', value: '1' }
+    - { name: 'kernel.perf_event_max_sample_rate', value: '1' }
+    # Filesystem protections
+    - { name: 'fs.protected_symlinks', value: '1' }
+    - { name: 'fs.protected_hardlinks', value: '1' }
+    - { name: 'fs.protected_fifos', value: '2' }
+    - { name: 'fs.protected_regular', value: '2' }
+    # Disable core dumps
+    - { name: 'fs.suid_dumpable', value: '0' }
+  loop_control:
+    loop_var: anssi_param
+
+- name: Disable core dumps system-wide
+  ansible.builtin.lineinfile:
+    path: /etc/security/limits.conf
+    line: "* hard core 0"
+    state: present
+
+- name: Ensure systemd coredump.conf.d directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/coredump.conf.d
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Disable core dumps in systemd
+  ansible.builtin.copy:
+    content: |
+      [Coredump]
+      Storage=none
+      ProcessSizeMax=0
+    dest: /etc/systemd/coredump.conf.d/disable-coredumps.conf
+    mode: '0644'
+    owner: root
+    group: root
+
+- name: Secure shared memory
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: "tmpfs /run/shm tmpfs defaults,noexec,nosuid 0 0"
+    state: present
+  when: ansible_facts['mounts'] | selectattr('mount', 'equalto', '/run/shm') | list | length == 0
+
+# HidePID - Hide process information from other users
+- name: Create proc group for process visibility
+  ansible.builtin.group:
+    name: proc
+    state: present
+    system: true
+
+- name: Add system users to proc group for process visibility
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: proc
+    append: true
+  loop:
+    - "{{ ansible_user }}"
+    - "{{ system_user }}"
+    - root
+
+- name: Configure /proc with hidepid in fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^proc\s+/proc\s+proc'
+    line: "proc /proc proc defaults,hidepid=2,gid=proc 0 0"
+    state: present
+  register: hidepid_fstab
+
+- name: Check current /proc mount options
+  ansible.builtin.shell: |
+    set -o pipefail
+    mount | grep "^proc on /proc" | grep -qE "(hidepid=2|hidepid=invisible)" && echo "configured" || echo "needs_remount"
+  args:
+    executable: /bin/bash
+  register: proc_mount_status
+  changed_when: false
+  failed_when: false
+
+- name: Remount /proc with hidepid
+  ansible.builtin.command: mount -o remount,hidepid=2,gid=proc /proc
+  when: proc_mount_status.stdout == "needs_remount"
+  changed_when: true
+
+- name: Set secure file permissions on critical files
+  ansible.builtin.file:
+    path: "{{ file_perm.path }}"
+    mode: "{{ file_perm.mode }}"
+    owner: root
+    group: root
+  loop:
+    - { path: '/etc/passwd', mode: '0644' }
+    - { path: '/etc/shadow', mode: '0640' }
+    - { path: '/etc/group', mode: '0644' }
+    - { path: '/etc/gshadow', mode: '0640' }
+    - { path: '/etc/ssh/sshd_config', mode: '0600' }
+  loop_control:
+    loop_var: file_perm
+
+- name: Disable unused network protocols
+  ansible.builtin.copy:
+    content: |
+      # Disable unused network protocols
+      install dccp /bin/true
+      install sctp /bin/true
+      install rds /bin/true
+      install tipc /bin/true
+    dest: /etc/modprobe.d/blacklist-rare-protocols.conf
+    mode: '0644'
+    owner: root
+    group: root
+
+- name: Blacklist DMA-capable and vulnerable modules
+  ansible.builtin.copy:
+    content: |
+      # Disable USB storage (comment out if needed for legitimate use)
+      install usb-storage /bin/true
+      
+      # Disable Firewire (DMA attacks)
+      blacklist firewire-core
+      blacklist firewire-ohci
+      blacklist firewire-sbp2
+      
+      # Disable Thunderbolt (DMA attacks)
+      blacklist thunderbolt
+    dest: /etc/modprobe.d/blacklist-dma.conf
+    mode: '0644'
+    owner: root
+    group: root
+
+- name: Install AppArmor utilities
+  ansible.builtin.apt:
+    name:
+      - apparmor
+      - apparmor-utils
+      - apparmor-profiles
+      - apparmor-profiles-extra
+    state: present
+
+- name: Ensure AppArmor is enabled and running
+  ansible.builtin.service:
+    name: apparmor
+    state: started
+    enabled: true
+
+- name: Check AppArmor status
+  ansible.builtin.command: aa-status --json
+  register: apparmor_status
+  changed_when: false
+  failed_when: false
+
+- name: Set AppArmor profiles to enforce mode
+  ansible.builtin.command: aa-enforce /etc/apparmor.d/*
+  register: apparmor_enforce
+  changed_when: "'Setting' in apparmor_enforce.stdout"
+  failed_when: false
+  when: apparmor_status.rc == 0
+
+- name: Install auditd for security monitoring
+  ansible.builtin.apt:
+    name:
+      - auditd
+      - audispd-plugins
+    state: present
+
+- name: Configure auditd rules (ANSSI-BP-028)
+  ansible.builtin.template:
+    src: auditd-rules.j2
+    dest: /etc/audit/rules.d/anssi-bp-028.rules
+    mode: '0640'
+    owner: root
+    group: root
+  notify: Restart auditd
+
+- name: Ensure auditd is enabled and running
+  ansible.builtin.service:
+    name: auditd
+    state: started
+    enabled: true
+
+- name: Configure logrotate - optional, default config usually sufficient
+  ansible.builtin.template:
+    src: logrotate.conf.j2
+    dest: /etc/logrotate.conf
+    mode: '0644'
+    owner: root
+    group: root
+  when: logrotate_custom_config | default(false)
+
+- name: Set login banner
+  ansible.builtin.copy:
+    content: |
+      {{ login_banner | default('Authorized users only. All activity may be monitored and reported.') }}
+    dest: /etc/issue.net
+    mode: '0644'
+    owner: root
+    group: root
+
+- name: Configure UFW defaults
+  community.general.ufw:
+    direction: incoming
+    policy: deny
+    state: enabled
+
+- name: Allow SSH
+  community.general.ufw:
+    rule: allow
+    port: "{{ ssh_port }}"
+    proto: tcp
+
+- name: Configure UFW logging
+  community.general.ufw:
+    logging: low
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+
+- name: Generate random passwords and salts
+  ansible.builtin.set_fact:
+    root_password: >-
+      {{ lookup('ansible.builtin.password',
+      playbook_dir + '/credentials/hosts/' + inventory_hostname + '/root_pass.txt' +
+      ' chars=ascii_letters,digits,!@#$%^&*()_+-= length=32') }}
+    root_salt: >-
+      {{ lookup('ansible.builtin.password',
+      playbook_dir + '/credentials/hosts/' + inventory_hostname + '/salts/root_salt.txt' +
+      ' chars=ascii_letters,digits length=16') }}
+    ansible_user_password: >-
+      {{ lookup('ansible.builtin.password',
+      playbook_dir + '/credentials/hosts/' + inventory_hostname + '/' + ansible_user + '_pass.txt' +
+      ' chars=ascii_letters,digits,!@#$%^&*()_+-= length=32') }}
+    ansible_user_salt: >-
+      {{ lookup('ansible.builtin.password',
+      playbook_dir + '/credentials/hosts/' + inventory_hostname + '/salts/' + ansible_user + '_salt.txt' +
+      ' chars=ascii_letters,digits length=16') }}
+    system_user_password: >-
+      {{ lookup('ansible.builtin.password',
+      playbook_dir + '/credentials/hosts/' + inventory_hostname + '/' + system_user + '_pass.txt' +
+      ' chars=ascii_letters,digits,!@#$%^&*()_+-= length=32') }}
+    system_user_salt: >-
+      {{ lookup('ansible.builtin.password',
+      playbook_dir + '/credentials/hosts/' + inventory_hostname + '/salts/' + system_user + '_salt.txt' +
+      ' chars=ascii_letters,digits length=16') }}
+
+- name: Set user passwords
+  ansible.builtin.user:
+    name: "{{ user_item.user }}"
+    password: "{{ user_item.pass | ansible.builtin.password_hash('sha512', user_item.salt) }}"
+  loop:
+    - { user: 'root', pass: "{{ root_password }}", salt: "{{ root_salt }}" }
+    - { user: "{{ ansible_user }}", pass: "{{ ansible_user_password }}", salt: "{{ ansible_user_salt }}" }
+    - { user: "{{ system_user }}", pass: "{{ system_user_password }}", salt: "{{ system_user_salt }}" }
+  loop_control:
+    loop_var: user_item
+  no_log: true
+
+# Cleanup and maintenance
+- name: Remove unnecessary packages
+  ansible.builtin.apt:
+    autoremove: true
+    autoclean: true
+
+# -----------------------------------------------------------------
+# Disable cloud-init to prevent re-configuration on reboot
+# -----------------------------------------------------------------
+
+- name: Check for cloud-init config file
+  ansible.builtin.stat:
+    path: /etc/cloud/cloud.cfg
+  register: cloud_init_config_file
+
+- name: Create cloud-init disable file
+  ansible.builtin.copy:
+    dest: /etc/cloud/cloud-init.disabled
+    content: ""
+    force: false  # only create if missing
+    mode: '0644'
+    owner: root
+    group: root
+  when: cloud_init_config_file.stat.exists

@@ -1,0 +1,385 @@
+---
+- name: Get system architecture
+  ansible.builtin.command: dpkg --print-architecture
+  register: system_arch
+  changed_when: false
+
+- name: Check installed version from version file
+  ansible.builtin.slurp:
+    src: /etc/node_exporter_version
+  register: installed_version_file
+  failed_when: false
+  changed_when: false
+
+- name: Set current version fact
+  ansible.builtin.set_fact:
+    current_version: "{{ (installed_version_file.content | b64decode | trim) if installed_version_file.content is defined else 'not_installed' }}"
+
+- name: Set installation needed fact
+  ansible.builtin.set_fact:
+    install_needed: "{{ current_version != node_exporter_version }}"
+
+- name: Download and install node_exporter
+  block:
+    - name: Download node_exporter
+      ansible.builtin.get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-{{ system_arch.stdout }}.tar.gz"
+        dest: /tmp/node_exporter.tar.gz
+        mode: '0644'
+
+    - name: Extract node_exporter
+      ansible.builtin.unarchive:
+        src: /tmp/node_exporter.tar.gz
+        dest: /tmp
+        remote_src: true
+
+    - name: Stop node_exporter service if running
+      ansible.builtin.service:
+        name: node_exporter
+        state: stopped
+      become: true
+      failed_when: false
+
+    - name: Copy node_exporter binary
+      ansible.builtin.copy:
+        src: /tmp/node_exporter-{{ node_exporter_version }}.linux-{{ system_arch.stdout }}/node_exporter
+        dest: /usr/local/bin/node_exporter
+        mode: '0755'
+        owner: root
+        group: root
+        remote_src: true
+      become: true
+
+    - name: Create version file
+      ansible.builtin.copy:
+        content: "{{ node_exporter_version }}"
+        dest: /etc/node_exporter_version
+        mode: '0644'
+      become: true
+
+    - name: Clean up temporary files
+      ansible.builtin.file:
+        path: "{{ temp_file }}"
+        state: absent
+      loop:
+        - /tmp/node_exporter.tar.gz
+        - /tmp/node_exporter-{{ node_exporter_version }}.linux-{{ system_arch.stdout }}
+      loop_control:
+        loop_var: temp_file
+  when: install_needed
+
+- name: Create node_exporter user
+  ansible.builtin.user:
+    name: node_exporter
+    system: true
+    shell: /bin/false
+    home: /
+    create_home: false
+  become: true
+
+- name: Create node_exporter systemd service
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Node Exporter
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      User=node_exporter
+      Group=node_exporter
+      Type=simple
+      ExecStart=/usr/local/bin/node_exporter
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/node_exporter.service
+    mode: '0644'
+  become: true
+  notify:
+    - Reload systemd
+    - Restart node_exporter
+
+- name: Enable and start node_exporter
+  ansible.builtin.service:
+    name: node_exporter
+    state: started
+    enabled: true
+  become: true
+
+- name: Allow node_exporter port (localhost + Docker bridge)
+  community.general.ufw:
+    rule: allow
+    port: 9100
+    proto: tcp
+    from_ip: "{{ ufw_from }}"
+  loop:
+    - 127.0.0.1
+    - 172.16.0.0/12
+  loop_control:
+    loop_var: ufw_from
+
+# =============================================================================
+# FAIL2BAN EXPORTER
+# =============================================================================
+
+- name: Check installed fail2ban_exporter version from version file
+  ansible.builtin.slurp:
+    src: /etc/fail2ban_exporter_version
+  register: installed_fail2ban_version_file
+  failed_when: false
+  changed_when: false
+
+- name: Set current fail2ban_exporter version fact
+  ansible.builtin.set_fact:
+    current_fail2ban_version: "{{ (installed_fail2ban_version_file.content | b64decode | trim) if installed_fail2ban_version_file.content is defined else 'not_installed' }}"
+
+- name: Set fail2ban_exporter installation needed fact
+  ansible.builtin.set_fact:
+    fail2ban_install_needed: "{{ current_fail2ban_version != fail2ban_exporter_version }}"
+
+- name: Download and install fail2ban_exporter
+  block:
+    - name: Download fail2ban_exporter
+      ansible.builtin.get_url:
+        url: "https://gitlab.com/hctrdev/fail2ban-prometheus-exporter/-/releases/v{{ fail2ban_exporter_version }}/downloads/fail2ban_exporter_{{ fail2ban_exporter_version }}_linux_{{ system_arch.stdout }}.tar.gz"
+        dest: /tmp/fail2ban_exporter.tar.gz
+        mode: '0644'
+
+    - name: Extract fail2ban_exporter
+      ansible.builtin.unarchive:
+        src: /tmp/fail2ban_exporter.tar.gz
+        dest: /tmp
+        remote_src: true
+
+    - name: Stop fail2ban_exporter service if running
+      ansible.builtin.service:
+        name: fail2ban_exporter
+        state: stopped
+      become: true
+      failed_when: false
+
+    - name: Copy fail2ban_exporter binary
+      ansible.builtin.copy:
+        src: /tmp/fail2ban_exporter
+        dest: /usr/local/bin/fail2ban_exporter
+        mode: '0755'
+        owner: root
+        group: root
+        remote_src: true
+      become: true
+
+    - name: Create version file for fail2ban_exporter
+      ansible.builtin.copy:
+        content: "{{ fail2ban_exporter_version }}"
+        dest: /etc/fail2ban_exporter_version
+        mode: '0644'
+      become: true
+
+    - name: Clean up temporary fail2ban_exporter files
+      ansible.builtin.file:
+        path: "{{ temp_file }}"
+        state: absent
+      loop:
+        - /tmp/fail2ban_exporter.tar.gz
+        - /tmp/fail2ban-prometheus-exporter
+      loop_control:
+        loop_var: temp_file
+  when: fail2ban_install_needed
+
+- name: Create fail2ban_exporter systemd service
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Fail2Ban Prometheus Exporter
+      Wants=network-online.target
+      After=network-online.target fail2ban.service
+
+      [Service]
+      User=root
+      Group=root
+      Type=simple
+      ExecStart=/usr/local/bin/fail2ban_exporter --web.listen-address=:9191
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/fail2ban_exporter.service
+    mode: '0644'
+  become: true
+  notify:
+    - Reload systemd
+    - Restart fail2ban_exporter
+
+- name: Enable and start fail2ban_exporter
+  ansible.builtin.service:
+    name: fail2ban_exporter
+    state: started
+    enabled: true
+  become: true
+
+- name: Allow fail2ban_exporter port (localhost + Docker bridge)
+  community.general.ufw:
+    rule: allow
+    port: 9191
+    proto: tcp
+    from_ip: "{{ ufw_from }}"
+  loop:
+    - 127.0.0.1
+    - 172.16.0.0/12
+  loop_control:
+    loop_var: ufw_from
+
+# =============================================================================
+# PROMTAIL (native binary — Docker image lacks journal support)
+# =============================================================================
+
+- name: Check installed promtail version from version file
+  ansible.builtin.slurp:
+    src: /etc/promtail_version
+  register: promtail_installed_version_file
+  failed_when: false
+  changed_when: false
+
+- name: Set current promtail version fact
+  ansible.builtin.set_fact:
+    promtail_current_version: >-
+      {{ (promtail_installed_version_file.content | b64decode | trim)
+      if promtail_installed_version_file.content is defined else 'not_installed' }}
+
+- name: Set promtail installation needed fact
+  ansible.builtin.set_fact:
+    promtail_install_needed: "{{ promtail_current_version != promtail_version }}"
+
+- name: Download and install promtail
+  when: promtail_install_needed
+  block:
+    - name: Install unzip for promtail extraction
+      ansible.builtin.apt:
+        name: unzip
+        state: present
+      become: true
+
+    - name: Download promtail
+      ansible.builtin.get_url:
+        url: >-
+          https://github.com/grafana/loki/releases/download/v{{ promtail_version }}/promtail-linux-{{ system_arch.stdout }}.zip
+        dest: /tmp/promtail.zip
+        mode: '0644'
+
+    - name: Extract promtail
+      ansible.builtin.unarchive:
+        src: /tmp/promtail.zip
+        dest: /tmp
+        remote_src: true
+
+    - name: Stop promtail service if running
+      ansible.builtin.service:
+        name: promtail
+        state: stopped
+      become: true
+      failed_when: false
+
+    - name: Copy promtail binary
+      ansible.builtin.copy:
+        src: /tmp/promtail-linux-{{ system_arch.stdout }}
+        dest: /usr/local/bin/promtail
+        mode: '0755'
+        owner: root
+        group: root
+        remote_src: true
+      become: true
+
+    - name: Create version file for promtail
+      ansible.builtin.copy:
+        content: "{{ promtail_version }}"
+        dest: /etc/promtail_version
+        mode: '0644'
+      become: true
+
+    - name: Clean up temporary promtail files
+      ansible.builtin.file:
+        path: "{{ promtail_temp_file }}"
+        state: absent
+      loop:
+        - /tmp/promtail.zip
+        - /tmp/promtail-linux-{{ system_arch.stdout }}
+      loop_control:
+        loop_var: promtail_temp_file
+
+- name: Check if docker group exists
+  ansible.builtin.getent:
+    database: group
+    key: docker
+  register: promtail_docker_group
+  failed_when: false
+
+- name: Create promtail user
+  ansible.builtin.user:
+    name: promtail
+    system: true
+    shell: /bin/false
+    home: /
+    create_home: false
+    groups: >-
+      {{ ['systemd-journal', 'adm'] +
+         (['docker'] if promtail_docker_group.ansible_facts.getent_group.docker is defined else []) }}
+    append: true
+  become: true
+  notify: Restart promtail
+
+- name: Create promtail config directory
+  ansible.builtin.file:
+    path: /etc/promtail
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Create promtail positions directory
+  ansible.builtin.file:
+    path: /var/lib/promtail
+    state: directory
+    mode: '0755'
+    owner: promtail
+    group: promtail
+  become: true
+
+- name: Configure promtail
+  ansible.builtin.template:
+    src: promtail.yml.j2
+    dest: /etc/promtail/promtail.yml
+    mode: '0644'
+  become: true
+  notify: Restart promtail
+
+- name: Create promtail systemd service
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Promtail Log Collector
+      Documentation=https://grafana.com/docs/loki/latest/clients/promtail/
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      User=promtail
+      Group=promtail
+      Type=simple
+      ExecStart=/usr/local/bin/promtail -config.file=/etc/promtail/promtail.yml
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/promtail.service
+    mode: '0644'
+  become: true
+  notify:
+    - Reload systemd
+    - Restart promtail
+
+- name: Enable and start promtail
+  ansible.builtin.service:
+    name: promtail
+    state: started
+    enabled: true
+  become: true

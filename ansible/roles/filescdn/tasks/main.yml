@@ -1,0 +1,45 @@
+---
+# =============================================================================
+# FILESCDN - Static file hosting via containerised Nginx
+# =============================================================================
+# Serves files from /srv/filescdn on the host. Upload files via SCP.
+# Joins the shared vps-services Docker network so nginx-gateway can proxy to it.
+# =============================================================================
+
+- name: Create filescdn directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - /opt/filescdn
+    - /srv/filescdn
+
+- name: Deploy Nginx configuration for filescdn
+  ansible.builtin.template:
+    src: nginx-filescdn.conf.j2
+    dest: /opt/filescdn/nginx-filescdn.conf
+    mode: '0644'
+  notify: Restart filescdn
+
+- name: Deploy custom landing page
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: /srv/filescdn/index.html
+    mode: '0644'
+
+- name: Deploy docker-compose.yml for filescdn
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/filescdn/docker-compose.yml
+    mode: '0644'
+  notify: Restart filescdn
+
+- name: Start filescdn containers
+  community.docker.docker_compose_v2:
+    project_src: /opt/filescdn
+    state: present
+    pull: "always"
+  become: true
+
+# Firewall: no host ports exposed — traffic comes via vps-services Docker network

@@ -1,0 +1,30 @@
+services:
+  searxng:
+    container_name: searxng
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    networks:
+      - vps-services
+    volumes:
+      - /etc/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - /etc/searxng/custom/simple/img/searxng.png:/usr/local/searxng/searx/static/themes/simple/img/searxng.png:ro
+    environment:
+      - SEARXNG_BASE_URL={{ searxng_base_url | default('http://' + ansible_host + ':8080/') }}
+      - UWSGI_WORKERS=4
+      - UWSGI_THREADS=4
+      - INSTANCE_NAME=NebulaXNG
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3" 
+
+networks:
+  vps-services:
+    external: true

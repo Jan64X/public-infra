@@ -1,0 +1,48 @@
+#!/bin/bash
+# update-cloudflare-ipset.sh
+# Fetches current Cloudflare edge IP ranges and populates ipset sets.
+set -euo pipefail
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+
+IPV4_URL="https://www.cloudflare.com/ips-v4"
+IPV6_URL="https://www.cloudflare.com/ips-v6"
+
+# --- IPv4 ---
+log "Fetching Cloudflare IPv4 ranges..."
+CF_V4=$(curl -fsSL "$IPV4_URL")
+
+# Create or flush the set
+ipset create cloudflare_v4 hash:net family inet  -exist
+ipset flush  cloudflare_v4
+
+while IFS= read -r cidr; do
+    [[ -z "$cidr" ]] && continue
+    ipset add cloudflare_v4 "$cidr" -exist
+done <<< "$CF_V4"
+
+log "Loaded $(echo "$CF_V4" | wc -l) IPv4 ranges."
+
+# --- IPv6 ---
+log "Fetching Cloudflare IPv6 ranges..."
+CF_V6=$(curl -fsSL "$IPV6_URL")
+
+ipset create cloudflare_v6 hash:net family inet6 -exist
+ipset flush  cloudflare_v6
+
+while IFS= read -r cidr; do
+    [[ -z "$cidr" ]] && continue
+    ipset add cloudflare_v6 "$cidr" -exist
+done <<< "$CF_V6"
+
+log "Loaded $(echo "$CF_V6" | wc -l) IPv6 ranges."
+
+# Persist sets so they survive reboot
+ipset save > /etc/ipset.conf 2>/dev/null || true
+
+# Re-apply DOCKER-USER rules with updated ipsets
+if [ -x /opt/nginx-gateway/scripts/docker-user-firewall.sh ]; then
+    /opt/nginx-gateway/scripts/docker-user-firewall.sh
+fi
+
+log "Done."

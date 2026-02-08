@@ -1,0 +1,387 @@
+---
+# =============================================================================
+# NGINX GATEWAY - Containerised Reverse-Proxy with Cloudflare-only firewall
+# =============================================================================
+# Creates the shared "vps-services" Docker network, installs Docker, deploys
+# Nginx + Certbot in Docker Compose, obtains wildcard TLS certs via DNS-01,
+# and restricts HTTPS access to Cloudflare edge IPs only (ipset + UFW).
+# =============================================================================
+
+# =============================================================================
+# PREREQUISITES
+# =============================================================================
+
+- name: Install required packages
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ipset
+      - iptables
+      - git
+      - acl
+      - ca-certificates
+      - gnupg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# =============================================================================
+# DOCKER INSTALLATION
+# =============================================================================
+
+- name: Create directory for Docker GPG key
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Add Docker GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/debian/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: '0644'
+  become: true
+
+- name: Get system architecture
+  ansible.builtin.command: dpkg --print-architecture
+  register: nginx_gateway_system_arch
+  changed_when: false
+
+- name: Add Docker repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ nginx_gateway_system_arch.stdout }}
+      signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/debian
+      {{ ansible_facts['distribution_release'] }} stable
+    state: present
+    filename: docker
+  become: true
+
+- name: Install Docker and Docker Compose plugin
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+      - python3-docker
+    state: present
+    update_cache: true
+  become: true
+
+- name: Ensure Docker service is running
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+  become: true
+
+# =============================================================================
+# SHARED DOCKER NETWORK
+# =============================================================================
+
+- name: Create vps-services Docker network
+  community.docker.docker_network:
+    name: vps-services
+    driver: bridge
+  become: true
+
+# =============================================================================
+# DIRECTORY STRUCTURE
+# =============================================================================
+
+- name: Create nginx-gateway directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - /opt/nginx-gateway
+    - /opt/nginx-gateway/conf.d
+    - /opt/nginx-gateway/ssl
+    - /opt/nginx-gateway/logs
+    - /opt/nginx-gateway/scripts
+
+# =============================================================================
+# CLOUDFLARE-ONLY FIREWALL (ipset + DOCKER-USER iptables chain)
+# =============================================================================
+# Docker bypasses UFW, so we use the DOCKER-USER iptables chain to restrict
+# port 443 to Cloudflare IPs only.  A systemd timer refreshes the ipsets daily.
+
+- name: Deploy Cloudflare ipset update script
+  ansible.builtin.template:
+    src: update-cloudflare-ipset.sh.j2
+    dest: /opt/nginx-gateway/scripts/update-cloudflare-ipset.sh
+    mode: '0755'
+
+- name: Deploy systemd service for Cloudflare ipset
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/update-cloudflare-ipset.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Update Cloudflare IP sets
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/opt/nginx-gateway/scripts/update-cloudflare-ipset.sh
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Enable Cloudflare ipset update service
+  ansible.builtin.systemd:
+    name: update-cloudflare-ipset.service
+    enabled: true
+    daemon_reload: true
+
+- name: Deploy systemd timer for daily Cloudflare ipset refresh
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/update-cloudflare-ipset.timer
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Daily refresh of Cloudflare IP sets
+
+      [Timer]
+      OnCalendar=*-*-* 04:00:00
+      RandomizedDelaySec=300
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+
+- name: Enable and start Cloudflare ipset timer
+  ansible.builtin.systemd:
+    name: update-cloudflare-ipset.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Check if Cloudflare ipsets are loaded
+  ansible.builtin.command:
+    cmd: ipset list cloudflare_v4
+  register: nginx_gateway_ipset_check
+  changed_when: false
+  failed_when: false
+
+- name: Run Cloudflare ipset update (first run)
+  ansible.builtin.command:
+    cmd: /opt/nginx-gateway/scripts/update-cloudflare-ipset.sh
+  when: nginx_gateway_ipset_check.rc != 0
+  changed_when: true
+
+# --- Cloudflare-only HTTPS via DOCKER-USER chain ---
+# Docker bypasses UFW entirely — it inserts its own DNAT/FORWARD rules in
+# iptables before UFW's filter chain.  The DOCKER-USER chain is the only
+# place Docker honours user-defined firewall rules.
+# Strategy: accept port-443 traffic from Cloudflare ipsets, drop the rest.
+
+- name: Deploy DOCKER-USER iptables rules script
+  ansible.builtin.copy:
+    dest: /opt/nginx-gateway/scripts/docker-user-firewall.sh
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Populate DOCKER-USER chain to restrict port 443 to Cloudflare IPs only.
+      set -euo pipefail
+
+      # Flush existing DOCKER-USER rules (Docker re-creates the chain itself)
+      iptables  -F DOCKER-USER 2>/dev/null || true
+      ip6tables -F DOCKER-USER 2>/dev/null || true
+
+      # Allow established/related (return traffic, etc.)
+      iptables  -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+      ip6tables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+
+      # Allow port 443 only from Cloudflare IPs
+      iptables  -A DOCKER-USER -p tcp --dport 443 -m set --match-set cloudflare_v4 src -j RETURN
+      ip6tables -A DOCKER-USER -p tcp --dport 443 -m set --match-set cloudflare_v6 src -j RETURN
+
+      # Drop all other traffic to port 443
+      iptables  -A DOCKER-USER -p tcp --dport 443 -j DROP
+      ip6tables -A DOCKER-USER -p tcp --dport 443 -j DROP
+
+      # Allow everything else through DOCKER-USER (other container traffic)
+      iptables  -A DOCKER-USER -j RETURN
+      ip6tables -A DOCKER-USER -j RETURN
+  notify: Apply docker-user firewall
+
+- name: Deploy systemd service for DOCKER-USER firewall
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/docker-user-firewall.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Apply DOCKER-USER iptables rules for Cloudflare-only HTTPS
+      After=docker.service update-cloudflare-ipset.service
+      Requires=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/opt/nginx-gateway/scripts/docker-user-firewall.sh
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Enable docker-user-firewall service
+  ansible.builtin.systemd:
+    name: docker-user-firewall.service
+    enabled: true
+    daemon_reload: true
+
+- name: Remove stale UFW before.rules cloudflare entry (Docker bypasses it)
+  ansible.builtin.lineinfile:
+    path: /etc/ufw/before.rules
+    line: '-A ufw-before-input -p tcp --dport 443 -m set --match-set cloudflare_v4 src -j ACCEPT'
+    state: absent
+  notify: Reload ufw
+
+- name: Remove stale UFW before6.rules cloudflare entry (Docker bypasses it)
+  ansible.builtin.lineinfile:
+    path: /etc/ufw/before6.rules
+    line: '-A ufw6-before-input -p tcp --dport 443 -m set --match-set cloudflare_v6 src -j ACCEPT'
+    state: absent
+  notify: Reload ufw
+
+# =============================================================================
+# CERTBOT (host-level — simpler than containerising DNS-01)
+# =============================================================================
+
+- name: Install Certbot and Cloudflare plugin
+  ansible.builtin.apt:
+    name:
+      - certbot
+      - python3-certbot-dns-cloudflare
+    state: present
+
+- name: Create Cloudflare API credentials file
+  ansible.builtin.copy:
+    dest: /etc/letsencrypt/cloudflare.ini
+    mode: '0600'
+    content: |
+      dns_cloudflare_api_token = {{ cloudflare_api_token }}
+
+- name: Generate wildcard certificate
+  ansible.builtin.command:
+    cmd: >
+      certbot certonly --dns-cloudflare
+      --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini
+      --dns-cloudflare-propagation-seconds 60
+      --non-interactive --agree-tos --email {{ certbot_email }}
+      --cert-name {{ base_domain }}
+      -d {{ base_domain }} -d *.{{ base_domain }}
+      --keep-until-expiring
+  args:
+    creates: "/etc/letsencrypt/live/{{ base_domain }}/fullchain.pem"
+
+- name: Ensure renewal hooks directory exists
+  ansible.builtin.file:
+    path: /etc/letsencrypt/renewal-hooks/deploy
+    state: directory
+    mode: '0755'
+
+- name: Add deploy hook to reload Nginx container on cert renewal
+  ansible.builtin.copy:
+    dest: /etc/letsencrypt/renewal-hooks/deploy/nginx_reload
+    mode: '0755'
+    content: |
+      #!/bin/sh
+      docker compose -f /opt/nginx-gateway/docker-compose.yml exec -T nginx nginx -s reload
+
+- name: Ensure Certbot renewal timer is active
+  ansible.builtin.service:
+    name: certbot.timer
+    state: started
+    enabled: true
+
+# =============================================================================
+# NGINX CONFIGURATION
+# =============================================================================
+
+- name: Fetch Cloudflare IPv4 list (for set_real_ip_from)
+  ansible.builtin.uri:
+    url: https://www.cloudflare.com/ips-v4
+    return_content: true
+  register: nginx_gateway_cf_ipv4
+
+- name: Fetch Cloudflare IPv6 list (for set_real_ip_from)
+  ansible.builtin.uri:
+    url: https://www.cloudflare.com/ips-v6
+    return_content: true
+  register: nginx_gateway_cf_ipv6
+
+- name: Generate dhparams
+  community.crypto.openssl_dhparam:
+    path: /opt/nginx-gateway/ssl/dhparam.pem
+    size: 2048
+
+- name: Deploy main nginx.conf
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /opt/nginx-gateway/nginx.conf
+    mode: '0644'
+  notify: Restart nginx-gateway
+
+- name: Deploy virtual host configs
+  ansible.builtin.template:
+    src: "{{ item }}.conf.j2"
+    dest: "/opt/nginx-gateway/conf.d/{{ item }}.conf"
+    mode: '0644'
+  loop: "{{ nginx_vhosts }}"
+  notify: Restart nginx-gateway
+
+# =============================================================================
+# STATIC WEBSITE
+# =============================================================================
+
+- name: Ensure static website directory exists
+  ansible.builtin.file:
+    path: "{{ static_website.local_path }}"
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  when: static_website.enabled | default(false)
+
+- name: Deploy static site from Git
+  ansible.builtin.git:
+    repo: "{{ static_website.repo_url }}"
+    dest: "{{ static_website.local_path }}"
+    version: "{{ static_website.repo_branch }}"
+    force: true
+    depth: 1
+  when: static_website.enabled | default(false)
+
+- name: Enforce secure permissions on static site
+  ansible.builtin.file:
+    path: "{{ static_website.local_path }}"
+    state: directory
+    recurse: true
+    owner: root
+    group: root
+    mode: u=rwX,g=rX,o=rX
+  when: static_website.enabled | default(false)
+
+# =============================================================================
+# DOCKER COMPOSE
+# =============================================================================
+
+- name: Deploy docker-compose.yml for nginx-gateway
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/nginx-gateway/docker-compose.yml
+    mode: '0644'
+  notify: Restart nginx-gateway
+
+- name: Start nginx-gateway containers
+  community.docker.docker_compose_v2:
+    project_src: /opt/nginx-gateway
+    state: present
+    pull: "always"
+  become: true

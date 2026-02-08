@@ -1,0 +1,22 @@
+---
+- name: Restart nginx-gateway
+  community.docker.docker_compose_v2:
+    project_src: /opt/nginx-gateway
+    state: restarted
+  become: true
+
+- name: Reload nginx-gateway
+  community.docker.docker_compose_v2:
+    project_src: /opt/nginx-gateway
+    state: present
+    recreate: always
+  become: true
+
+- name: Reload ufw
+  community.general.ufw:
+    state: reloaded
+
+- name: Apply docker-user firewall
+  ansible.builtin.command:
+    cmd: /opt/nginx-gateway/scripts/docker-user-firewall.sh
+  become: true

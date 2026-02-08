@@ -1,0 +1,64 @@
+---
+# System Configuration
+system_user: sysadmin
+system_user_groups:
+  - wheel
+  - ssh
+
+ansible_user: ansible
+ansible_user_groups:
+  - ssh
+
+# SSH Configuration
+ssh_port: 22
+
+ansible_ssh_public_key: "{{ lookup('file', playbook_dir + '/credentials/ssh_keys/ansible_admin.pub') }}"
+
+# Sysadmin SSH keys for VPS hosts
+sysadmin_ssh_keys:
+  - "{{ lookup('file', playbook_dir + '/credentials/ssh_keys/sysadmin_vpses.pub') }}"
+
+sysadmin_ssh_key: "{{ sysadmin_ssh_keys | join('\n') }}"
+
+# === PUBLIC SERVICES ===
+base_domain: example.com
+
+ssl_enabled: true
+cloudflare_enabled: true
+domain_name: "{{ base_domain }}"
+cloudflare_api_token: "yourkeyhere"
+certbot_email: "admin@example.com"
+
+nginx_vhosts:
+  - search
+  - base_domain
+  - filescdn
+  - monitoring
+
+service_ports:
+  search: 8080
+  filescdn: 8080
+  monitoring: 3000
+
+services:
+  search:
+    domain: "search.{{ base_domain }}"
+    backend_server: "http://searxng:{{ service_ports.search }}"
+  filescdn:
+    domain: "cdn.{{ base_domain }}"
+    backend_server: "http://filescdn:{{ service_ports.filescdn }}"
+  monitoring:
+    domain: "monitoring.{{ base_domain }}"
+    backend_server: "http://external-grafana:{{ service_ports.monitoring }}"
+
+# Grafana
+grafana_admin_password: "changeme"
+
+searxng_base_url: "https://search.{{ base_domain }}"
+
+static_website:
+  enabled: true
+  repo_url: "https://github.com/yourusername/yourwebsite.git"
+  repo_branch: "build"
+  local_path: "/srv/nginx/{{ base_domain }}"
+  github_api_url: "https://api.github.com/repos/yourusername/yourwebsite/commits/main"

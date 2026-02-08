@@ -1,0 +1,22 @@
+# Credentials and secrets
+ansible/credentials/hosts/*/
+ansible/credentials/ssh_keys/ansible_admin.key
+ansible/credentials/ssh_keys/*.key
+
+# Actual variable files (examples are tracked)
+ansible/group_vars/all.yml
+ansible/inventory/hosts.yml
+
+# Ansible retry files
+*.retry
+
+# Ansible cache
+ansible/.ansible/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,72 @@
+# SSH config baseline courtesy of Mozilla
+# Basic Security
+Port {{ ssh_port }}
+Protocol 2
+
+# Host Key Algorithms (Mozilla recommended order)
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+
+# Root Access disabled to improve logging
+PermitRootLogin no
+
+# Authentication Configuration
+PasswordAuthentication no
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
+AuthenticationMethods publickey
+StrictModes yes
+MaxAuthTries 3
+MaxSessions 4
+
+# PAM Configuration
+UsePAM yes
+
+# Logging (Enhanced for better auditing)
+SyslogFacility AUTH
+LogLevel VERBOSE
+
+# Modern Cryptography
+KexAlgorithms curve25519-sha256@libssh.org,ecdh-sha2-nistp521,ecdh-sha2-nistp384,ecdh-sha2-nistp256,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
+
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-512,hmac-sha2-256,umac-128@openssh.com
+
+# Connection Security
+ClientAliveInterval 300
+ClientAliveCountMax 2
+TCPKeepAlive no
+Compression no
+
+# Access Control
+AllowGroups ssh
+MaxStartups 10:30:60
+LoginGraceTime 60
+
+# Environment
+AcceptEnv LANG LC_*
+
+# X11 Security
+X11Forwarding no
+X11UseLocalhost yes
+
+# Port Forwarding Security
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+GatewayPorts no
+PermitTunnel no
+
+# SFTP Configuration (Enhanced logging)
+Subsystem sftp /usr/lib/openssh/sftp-server -f AUTHPRIV -l INFO
+
+# Additional Security Hardening
+PermitUserEnvironment no
+AllowAgentForwarding no
+PermitTTY yes
+PrintMotd no
+PrintLastLog yes
+Banner none
