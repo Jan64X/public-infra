@@ -2,6 +2,7 @@
 ansible/credentials/hosts/*/
 ansible/credentials/ssh_keys/ansible_admin.key
 ansible/credentials/ssh_keys/*.key
+ansible/credentials/ssh_keys/*.pub
 
 # Actual variable files (examples are tracked)
 ansible/group_vars/all.yml

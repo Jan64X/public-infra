@@ -1,67 +1,32 @@
 ---
-- name: Install required packages for Docker repository
+# =============================================================================
+# EXTERNAL MONITOR - Prometheus + Loki + Grafana via Podman Quadlet
+# =============================================================================
+
+# =============================================================================
+# PODMAN INSTALLATION
+# =============================================================================
+
+- name: Install Podman
   ansible.builtin.apt:
     name:
-      - ca-certificates
-      - curl
-      - gnupg
-      - lsb-release
-      - python3-requests
+      - podman
+      - uidmap
+      - slirp4netns
     state: present
     update_cache: true
   become: true
 
-- name: Create directory for Docker GPG key
+- name: Ensure Quadlet directory exists
   ansible.builtin.file:
-    path: /etc/apt/keyrings
+    path: /etc/containers/systemd
     state: directory
     mode: '0755'
   become: true
 
-- name: Add Docker GPG key
-  ansible.builtin.get_url:
-    url: https://download.docker.com/linux/debian/gpg
-    dest: /etc/apt/keyrings/docker.asc
-    mode: '0644'
-  become: true
-
-- name: Set Docker GPG key permissions
-  ansible.builtin.file:
-    path: /etc/apt/keyrings/docker.asc
-    mode: '0644'
-    owner: root
-    group: root
-  become: true
-
-- name: Get system architecture
-  ansible.builtin.command: dpkg --print-architecture
-  register: system_arch
-  changed_when: false
-
-- name: Add Docker repository
-  ansible.builtin.apt_repository:
-    repo: "deb [arch={{ system_arch.stdout }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian {{ ansible_facts['distribution_release'] }} stable"
-    state: present
-    filename: docker
-  become: true
-
-- name: Install Docker and Docker Compose plugin
-  ansible.builtin.apt:
-    name:
-      - docker-ce
-      - docker-ce-cli
-      - containerd.io
-      - docker-compose-plugin
-    state: present
-    update_cache: true
-  become: true
-
-- name: Ensure Docker service is running
-  ansible.builtin.service:
-    name: docker
-    state: started
-    enabled: true
-  become: true
+# =============================================================================
+# DIRECTORY STRUCTURE
+# =============================================================================
 
 - name: Create external-monitor directories
   ansible.builtin.file:
@@ -86,6 +51,7 @@
 - name: Set ownership for Prometheus directory
   ansible.builtin.file:
     path: /var/lib/external-prometheus
+    state: directory
     owner: 65534
     group: 65534
     recurse: true
@@ -94,6 +60,7 @@
 - name: Set ownership for Grafana directory
   ansible.builtin.file:
     path: /var/lib/external-grafana
+    state: directory
     owner: 472
     group: 472
     recurse: true
@@ -102,10 +69,15 @@
 - name: Set ownership for Loki directory
   ansible.builtin.file:
     path: /var/lib/external-loki
+    state: directory
     owner: 10001
     group: 10001
     recurse: true
   become: true
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
 
 - name: Configure Prometheus for external monitoring
   ansible.builtin.template:
@@ -115,6 +87,14 @@
   become: true
   register: prometheus_config
   notify: Restart external monitor stack
+
+- name: Seed empty Prometheus alert rules
+  ansible.builtin.copy:
+    content: "groups: []\n"
+    dest: /etc/external-monitor/prometheus/alert_rules.yml
+    mode: '0644'
+    force: false
+  become: true
 
 - name: Configure Loki
   ansible.builtin.template:
@@ -140,23 +120,92 @@
   become: true
   notify: Restart external monitor stack
 
-- name: Copy docker-compose.yml for external monitor stack
+# =============================================================================
+# PODMAN QUADLET
+# =============================================================================
+
+- name: Deploy external-monitor network Quadlet
   ansible.builtin.template:
-    src: docker-compose.yml.j2
-    dest: /etc/external-monitor/docker-compose.yml
+    src: external-monitor.network.j2
+    dest: /etc/containers/systemd/external-monitor.network
     mode: '0644'
   become: true
-  register: compose_result
 
-- name: Start external monitor stack
-  community.docker.docker_compose_v2:
-    project_src: /etc/external-monitor
-    state: present
-    pull: "always"
+- name: Deploy Loki container Quadlet
+  ansible.builtin.template:
+    src: external-loki.container.j2
+    dest: /etc/containers/systemd/external-loki.container
+    mode: '0644'
   become: true
-  when: >
-    prometheus_config.changed or
-    compose_result.changed
+  notify: Restart external monitor stack
+
+- name: Deploy Prometheus container Quadlet
+  ansible.builtin.template:
+    src: external-prometheus.container.j2
+    dest: /etc/containers/systemd/external-prometheus.container
+    mode: '0644'
+  become: true
+  notify: Restart external monitor stack
+
+- name: Deploy Grafana container Quadlet
+  ansible.builtin.template:
+    src: external-grafana.container.j2
+    dest: /etc/containers/systemd/external-grafana.container
+    mode: '0644'
+  become: true
+  notify: Restart external monitor stack
+
+- name: Reload systemd to pick up Quadlet units
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+
+- name: Check if monitoring images exist locally
+  ansible.builtin.command:
+    cmd: "podman image exists {{ image_item }}"
+  loop:
+    - docker.io/grafana/loki:latest
+    - docker.io/prom/prometheus:latest
+    - docker.io/grafana/grafana:latest
+  loop_control:
+    loop_var: image_item
+  register: monitor_images_check
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Pull missing monitoring stack images
+  ansible.builtin.command:
+    cmd: "podman pull {{ item.image_item }}"
+  loop: "{{ monitor_images_check.results }}"
+  when: item.rc != 0
+  changed_when: true
+  become: true
+
+- name: Start Loki service
+  ansible.builtin.systemd:
+    name: external-loki
+    state: started
+    enabled: true
+  become: true
+
+- name: Start Prometheus service
+  ansible.builtin.systemd:
+    name: external-prometheus
+    state: started
+    enabled: true
+  become: true
+
+- name: Start Grafana service
+  ansible.builtin.systemd:
+    name: external-grafana
+    state: started
+    enabled: true
+  become: true
+
+# =============================================================================
+# FIREWALL
+# =============================================================================
 
 - name: Allow Prometheus HTTP (localhost only)
   community.general.ufw:
@@ -174,3 +223,10 @@
     from_ip: 127.0.0.1
     delete: true
   notify: Reload ufw
+
+# --- Clean up stale Docker-era artefacts ---
+
+- name: Remove stale docker-compose.yml
+  ansible.builtin.file:
+    path: /etc/external-monitor/docker-compose.yml
+    state: absent

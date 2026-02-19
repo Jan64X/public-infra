@@ -1,22 +1,23 @@
 ---
 - name: Restart nginx-gateway
-  community.docker.docker_compose_v2:
-    project_src: /opt/nginx-gateway
+  ansible.builtin.systemd:
+    name: nginx-gateway
     state: restarted
   become: true
 
 - name: Reload nginx-gateway
-  community.docker.docker_compose_v2:
-    project_src: /opt/nginx-gateway
-    state: present
-    recreate: always
+  ansible.builtin.command:
+    cmd: podman exec nginx-gateway nginx -s reload
   become: true
+  register: nginx_reload_result
+  changed_when: nginx_reload_result.rc == 0
+  failed_when: nginx_reload_result.rc != 0
 
 - name: Reload ufw
   community.general.ufw:
     state: reloaded
 
-- name: Apply docker-user firewall
-  ansible.builtin.command:
-    cmd: /opt/nginx-gateway/scripts/docker-user-firewall.sh
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
   become: true

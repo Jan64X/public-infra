@@ -3,7 +3,7 @@
 # FILESCDN - Static file hosting via containerised Nginx
 # =============================================================================
 # Serves files from /srv/filescdn on the host. Upload files via SCP.
-# Joins the shared vps-services Docker network so nginx-gateway can proxy to it.
+# Joins the shared vps-services Podman network so nginx-gateway can proxy to it.
 # =============================================================================
 
 - name: Create filescdn directories
@@ -28,18 +28,49 @@
     dest: /srv/filescdn/index.html
     mode: '0644'
 
-- name: Deploy docker-compose.yml for filescdn
+# =============================================================================
+# PODMAN QUADLET
+# =============================================================================
+
+- name: Deploy filescdn container Quadlet
   ansible.builtin.template:
-    src: docker-compose.yml.j2
-    dest: /opt/filescdn/docker-compose.yml
+    src: filescdn.container.j2
+    dest: /etc/containers/systemd/filescdn.container
     mode: '0644'
   notify: Restart filescdn
 
-- name: Start filescdn containers
-  community.docker.docker_compose_v2:
-    project_src: /opt/filescdn
-    state: present
-    pull: "always"
+- name: Reload systemd to pick up Quadlet units
+  ansible.builtin.systemd:
+    daemon_reload: true
   become: true
 
-# Firewall: no host ports exposed — traffic comes via vps-services Docker network
+- name: Check if filescdn image exists locally
+  ansible.builtin.command:
+    cmd: podman image exists docker.io/library/nginx:stable-alpine
+  register: filescdn_image_check
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Pull filescdn image
+  ansible.builtin.command:
+    cmd: podman pull docker.io/library/nginx:stable-alpine
+  when: filescdn_image_check.rc != 0
+  changed_when: true
+  become: true
+
+- name: Start filescdn service
+  ansible.builtin.systemd:
+    name: filescdn
+    state: started
+    enabled: true
+  become: true
+
+# --- Clean up stale Docker-era artefacts ---
+
+- name: Remove stale docker-compose.yml
+  ansible.builtin.file:
+    path: /opt/filescdn/docker-compose.yml
+    state: absent
+
+# Firewall: no host ports exposed — traffic comes via vps-services Podman network

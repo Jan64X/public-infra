@@ -1,0 +1,29 @@
+[Unit]
+Description=Prometheus Monitoring
+After=network-online.target
+
+[Container]
+ContainerName=external-prometheus
+Image=docker.io/prom/prometheus:latest
+AutoUpdate=registry
+Pull=newer
+User=65534:65534
+PublishPort=127.0.0.1:9090:9090
+Volume=/etc/external-monitor/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+Volume=/etc/external-monitor/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+Volume=/var/lib/external-prometheus:/prometheus
+Volume=/etc/localtime:/etc/localtime:ro
+Exec=--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --web.console.libraries=/etc/prometheus/console_libraries --web.console.templates=/etc/prometheus/consoles --storage.tsdb.retention.time=30d --web.enable-lifecycle --web.listen-address=0.0.0.0:9090 --storage.tsdb.wal-compression
+Network=external-monitor.network
+HealthCmd=wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+HealthStartPeriod=30s
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

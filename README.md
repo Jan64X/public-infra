@@ -16,7 +16,7 @@ This repository manages a single Oracle Cloud VPS running:
 - **Cloudflare-only ingress** — Port 443 restricted to Cloudflare IPs via ipset + UFW
 - **DNS-01 wildcard certs** — Certbot with Cloudflare DNS plugin
 - **Hardened base** — SSH key-only auth, fail2ban, kernel hardening, AppArmor
-- **Docker isolation** — All services run in containers on a shared bridge network
+- **Podman Quadlet isolation** — All services run as systemd-managed Podman containers
 
 ## 📁 Repository Structure
 
@@ -29,6 +29,7 @@ This repository manages a single Oracle Cloud VPS running:
     ├── ansible.cfg              # Ansible configuration
     ├── site.yml                 # Main playbook
     ├── update.yml               # System update playbook
+    ├── cleanup-docker.yml       # Oneshot Docker removal (pre-migration)
     ├── inventory/
     │   └── hosts.yml            # VPS host inventory
     ├── group_vars/
@@ -75,13 +76,15 @@ Internet → Cloudflare → [443] Nginx Gateway
                                  ├── monitoring.domain.com  → Grafana container
                                  └── domain.com             → Static website (git clone)
                               
-External Monitor (separate Docker network, Grafana also on vps-services):
+External Monitor (separate Podman network, Grafana also on vps-services):
   Prometheus → Node Exporter (host) + Fail2Ban Exporter (host)
-  Loki ← Promtail (Docker logs + systemd journal)
+  Loki ← Promtail (container logs + systemd journal)
   Grafana → Prometheus + Loki (dashboards + log exploration)
 ```
 
-The `vps-services` Docker bridge network is created by `nginx_gateway` and shared by `searxng`, `filescdn`, and `grafana`. Nginx resolves backends by container name via Docker's embedded DNS (127.0.0.11).
+The `vps-services` Podman network is deployed by `nginx_gateway` via Quadlet and shared by `searxng`, `filescdn`, and `grafana`. Nginx resolves backends by container name via Podman's aardvark-dns (10.89.0.1).
+
+> **Note:** `nginx_gateway` must appear before `searxng`, `filescdn`, and `external-monitor` in the `host_roles` list, since it deploys the shared `vps-services` network.
 
 ## 🔧 Roles
 
@@ -89,8 +92,7 @@ The `vps-services` Docker bridge network is created by `nginx_gateway` and share
 System hardening applied to all hosts: users, SSH, sudoers, UFW, fail2ban, chrony, kernel hardening, AppArmor, unattended-upgrades.
 
 ### nginx_gateway
-- Installs Docker CE
-- Creates shared `vps-services` bridge network
+- Installs Podman and deploys shared `vps-services` network via Quadlet
 - Deploys Cloudflare ipset firewall (port 443 only from CF IPs)
 - Certbot with dns-cloudflare plugin for wildcard certs
 - Nginx with `set_real_ip_from` for all Cloudflare ranges
@@ -98,18 +100,18 @@ System hardening applied to all hosts: users, SSH, sudoers, UFW, fail2ban, chron
 - Git-cloned static website
 
 ### searxng
-SearXNG metasearch engine in Docker on the `vps-services` network.
+SearXNG metasearch engine via Podman Quadlet on the `vps-services` network.
 
 ### filescdn
 Lightweight Nginx container serving static files on the `vps-services` network.
 
 ### monitoring-vps
-Installs node_exporter, fail2ban_exporter, and promtail as native systemd services. Promtail ships Docker container logs and systemd journal to Loki. UFW rules allow localhost and Docker bridge access (scraped by external-monitor's Prometheus).
+Installs node_exporter, fail2ban_exporter, and promtail as native systemd services. Promtail ships Podman container logs and systemd journal to Loki. UFW rules allow localhost and Podman subnet access (scraped by external-monitor's Prometheus).
 
 ### external-monitor
-Dockerized Prometheus + Loki + Grafana stack:
+Podman Quadlet Prometheus + Loki + Grafana stack:
 - Scrapes local node_exporter and fail2ban_exporter for VPS metrics
-- Loki ingests logs from Promtail (Docker containers + systemd journal)
+- Loki ingests logs from Promtail (containers + systemd journal)
 - Grafana dashboard accessible at `monitoring.<domain>` via nginx reverse proxy
 
 ## 📊 Monitoring
@@ -117,7 +119,7 @@ Dockerized Prometheus + Loki + Grafana stack:
 The VPS runs a self-contained monitoring stack:
 - **Node Exporter** (port 9100, localhost) — system metrics
 - **Fail2Ban Exporter** (port 9191, localhost) — intrusion prevention metrics
-- **Promtail** (native systemd) — ships Docker + journal logs to Loki
+- **Promtail** (native systemd) — ships container + journal logs to Loki
 - **Prometheus** (port 9090, localhost) — scrapes exporters
 - **Loki** (port 3100, localhost) — log aggregation
 - **Grafana** (`monitoring.<domain>`) — dashboards + log exploration, reverse-proxied through nginx

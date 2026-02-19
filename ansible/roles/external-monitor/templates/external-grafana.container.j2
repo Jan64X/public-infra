@@ -1,0 +1,37 @@
+[Unit]
+Description=Grafana Dashboard
+After=external-loki.service external-prometheus.service
+
+[Container]
+ContainerName=external-grafana
+Image=docker.io/grafana/grafana:latest
+AutoUpdate=registry
+Pull=newer
+User=472:472
+Volume=/var/lib/external-grafana:/var/lib/grafana
+Volume=/etc/external-monitor/grafana/provisioning:/etc/grafana/provisioning
+Volume=/etc/localtime:/etc/localtime:ro
+Environment=GF_SECURITY_ADMIN_PASSWORD={{ grafana_admin_password }}
+Environment=GF_SECURITY_ADMIN_USER=admin
+Environment=GF_USERS_ALLOW_SIGN_UP=false
+Environment=GF_INSTALL_PLUGINS=grafana-piechart-panel
+Environment=GF_SERVER_ROOT_URL=https://{{ services.monitoring.domain }}
+Environment=GF_SERVER_DOMAIN={{ services.monitoring.domain }}
+Environment=GF_METRICS_ENABLED=true
+Environment=GF_ANALYTICS_REPORTING_ENABLED=false
+Environment=GF_ANALYTICS_CHECK_FOR_UPDATES=false
+Environment=GF_SECURITY_DISABLE_GRAVATAR=true
+Network=external-monitor.network
+Network=vps-services.network
+HealthCmd=curl -f http://localhost:3000/api/health || exit 1
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+HealthStartPeriod=30s
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

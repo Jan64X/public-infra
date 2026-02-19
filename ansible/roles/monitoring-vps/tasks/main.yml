@@ -101,13 +101,13 @@
     - Restart node_exporter
 
 - name: Enable and start node_exporter
-  ansible.builtin.service:
+  ansible.builtin.systemd:
     name: node_exporter
     state: started
     enabled: true
   become: true
 
-- name: Allow node_exporter port (localhost + Docker bridge)
+- name: Allow node_exporter port (localhost + Podman subnet)
   community.general.ufw:
     rule: allow
     port: 9100
@@ -115,7 +115,7 @@
     from_ip: "{{ ufw_from }}"
   loop:
     - 127.0.0.1
-    - 172.16.0.0/12
+    - 10.88.0.0/14
   loop_control:
     loop_var: ufw_from
 
@@ -211,13 +211,13 @@
     - Restart fail2ban_exporter
 
 - name: Enable and start fail2ban_exporter
-  ansible.builtin.service:
+  ansible.builtin.systemd:
     name: fail2ban_exporter
     state: started
     enabled: true
   become: true
 
-- name: Allow fail2ban_exporter port (localhost + Docker bridge)
+- name: Allow fail2ban_exporter port (localhost + Podman subnet)
   community.general.ufw:
     rule: allow
     port: 9191
@@ -225,7 +225,7 @@
     from_ip: "{{ ufw_from }}"
   loop:
     - 127.0.0.1
-    - 172.16.0.0/12
+    - 10.88.0.0/14
   loop_control:
     loop_var: ufw_from
 
@@ -306,12 +306,33 @@
       loop_control:
         loop_var: promtail_temp_file
 
-- name: Check if docker group exists
-  ansible.builtin.getent:
-    database: group
-    key: docker
-  register: promtail_docker_group
-  failed_when: false
+- name: Create Podman socket override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/podman.socket.d
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Configure Podman socket group for promtail access
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/podman.socket.d/promtail.conf
+    mode: '0644'
+    content: |
+      [Socket]
+      SocketGroup=promtail
+      SocketMode=0660
+  become: true
+  notify:
+    - Reload systemd
+    - Restart podman socket
+
+- name: Enable Podman socket for container log discovery
+  ansible.builtin.systemd:
+    name: podman.socket
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true
 
 - name: Create promtail user
   ansible.builtin.user:
@@ -320,9 +341,9 @@
     shell: /bin/false
     home: /
     create_home: false
-    groups: >-
-      {{ ['systemd-journal', 'adm'] +
-         (['docker'] if promtail_docker_group.ansible_facts.getent_group.docker is defined else []) }}
+    groups:
+      - systemd-journal
+      - adm
     append: true
   become: true
   notify: Restart promtail
@@ -378,7 +399,7 @@
     - Restart promtail
 
 - name: Enable and start promtail
-  ansible.builtin.service:
+  ansible.builtin.systemd:
     name: promtail
     state: started
     enabled: true

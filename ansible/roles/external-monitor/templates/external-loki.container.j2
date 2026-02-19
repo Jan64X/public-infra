@@ -1,0 +1,23 @@
+[Unit]
+Description=Loki Log Aggregation
+After=network-online.target
+
+[Container]
+ContainerName=external-loki
+Image=docker.io/grafana/loki:latest
+AutoUpdate=registry
+Pull=newer
+User=10001:10001
+PublishPort=127.0.0.1:3100:3100
+Volume=/etc/external-monitor/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+Volume=/var/lib/external-loki:/loki
+Volume=/etc/localtime:/etc/localtime:ro
+Exec=-config.file=/etc/loki/local-config.yaml
+Network=external-monitor.network
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

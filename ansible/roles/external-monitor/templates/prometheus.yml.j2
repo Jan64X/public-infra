@@ -26,13 +26,13 @@ scrape_configs:
   # Scrape local node_exporter for VPS system metrics
   - job_name: 'node_exporter'
     static_configs:
-      - targets: ['host.docker.internal:9100']
+      - targets: ['host.containers.internal:9100']
         labels:
           instance: '{{ inventory_hostname }}'
 
   # Scrape local fail2ban_exporter for VPS fail2ban metrics
   - job_name: 'fail2ban_exporter'
     static_configs:
-      - targets: ['host.docker.internal:9191']
+      - targets: ['host.containers.internal:9191']
         labels:
           instance: '{{ inventory_hostname }}'

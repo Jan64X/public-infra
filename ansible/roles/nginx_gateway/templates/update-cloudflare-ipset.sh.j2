@@ -38,11 +38,6 @@ done <<< "$CF_V6"
 log "Loaded $(echo "$CF_V6" | wc -l) IPv6 ranges."
 
 # Persist sets so they survive reboot
-ipset save > /etc/ipset.conf 2>/dev/null || true
-
-# Re-apply DOCKER-USER rules with updated ipsets
-if [ -x /opt/nginx-gateway/scripts/docker-user-firewall.sh ]; then
-    /opt/nginx-gateway/scripts/docker-user-firewall.sh
-fi
+ipset save > /etc/ipsets.conf 2>/dev/null || true
 
 log "Done."

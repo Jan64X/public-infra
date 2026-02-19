@@ -57,3 +57,10 @@
     state: restarted
     enabled: true
   become: true
+
+- name: Restart podman socket
+  ansible.builtin.systemd:
+    name: podman.socket
+    state: restarted
+    daemon_reload: true
+  become: true

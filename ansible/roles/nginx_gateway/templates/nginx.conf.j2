@@ -19,8 +19,8 @@ http {
     # SSL configuration
     ssl_dhparam /etc/nginx/dhparam.pem;
 
-    # Docker embedded DNS resolver (required for upstream resolution and OCSP stapling)
-    resolver 127.0.0.11 valid=30s;
+    # Podman embedded DNS resolver (required for upstream resolution and OCSP stapling)
+    resolver 10.89.0.1 valid=30s;
     resolver_timeout 5s;
 
     # --- Websocket support ---
@@ -54,7 +54,7 @@ http {
             stub_status on;
             access_log off;
             allow 127.0.0.0/8;
-            allow 172.16.0.0/12;
+            allow 10.88.0.0/14;
             deny all;
         }
     }

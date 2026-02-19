@@ -1,0 +1,31 @@
+[Unit]
+Description=Nginx Gateway Reverse Proxy
+After=network-online.target
+
+[Container]
+ContainerName=nginx-gateway
+Image=docker.io/library/nginx:stable-alpine
+AutoUpdate=registry
+Pull=newer
+PublishPort=443:443
+Volume=/opt/nginx-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+Volume=/opt/nginx-gateway/conf.d:/etc/nginx/conf.d:ro
+Volume=/opt/nginx-gateway/ssl/dhparam.pem:/etc/nginx/dhparam.pem:ro
+Volume=/etc/letsencrypt:/etc/letsencrypt:ro
+Volume=/opt/nginx-gateway/logs:/srv/nginx/logs
+{% if static_website.enabled | default(false) %}
+Volume={{ static_website.local_path }}:{{ static_website.local_path }}:ro
+{% endif %}
+Network=vps-services.network
+HealthCmd=wget -qO- http://127.0.0.1:8080/nginx_status
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=30s
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

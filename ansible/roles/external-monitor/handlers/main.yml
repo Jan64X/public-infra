@@ -1,8 +1,14 @@
 ---
 - name: Restart external monitor stack
-  community.docker.docker_compose_v2:
-    project_src: /etc/external-monitor
+  ansible.builtin.systemd:
+    name: "{{ service_item }}"
     state: restarted
+  loop:
+    - external-loki
+    - external-prometheus
+    - external-grafana
+  loop_control:
+    loop_var: service_item
   become: true
 
 - name: Reload ufw
