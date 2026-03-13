@@ -1,3 +1,5 @@
+> **Note:** I've since moved to a serverless setup, so this repo is not currently maintained. Archiving it here in case any of it is useful or if I want to resume using it in the future.
+
 # Public Infrastructure Automation
 
 Ansible playbook for managing a single Oracle Cloud VPS to run my public services. Deploys and configures web services behind an Nginx reverse proxy with Cloudflare integration.
